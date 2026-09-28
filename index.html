@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Isles Boss Timers</title>
+<style>
+  :root {
+    --bg: #f4f4f2;
+    --surface: #ffffff;
+    --text: #1d1d1b;
+    --muted: #6b6b66;
+    --border: #e2e2dc;
+    --row: #f7f7f4;
+    --live: #2f9e44;
+    --stale: #c92a2a;
+    --board-bg: rgba(20, 20, 20, 0.92);
+    --board-text: #ffffff;
+    --mc-red: #ff5555;
+    --mc-gold: #ffaa00;
+    --mc-green: #55ff55;
+    --mc-gray: #aaaaaa;
+    --state-red: #c92a2a;
+    --state-gold: #b66a00;
+    --state-green: #2b8a3e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #151515;
+      --surface: #1f1f1f;
+      --text: #ececea;
+      --muted: #9a9a94;
+      --border: #333330;
+      --row: #262624;
+      --live: #51cf66;
+      --stale: #ff6b6b;
+      --board-bg: rgba(0, 0, 0, 0.6);
+      --state-red: #ff6b6b;
+      --state-gold: #ffb030;
+      --state-green: #69db7c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 760px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .status { color: var(--muted); font-size: 14px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); display: inline-block; }
+  .dot.live { background: var(--live); }
+  .dot.stale { background: var(--stale); }
+
+  .board {
+    margin: 20px auto 28px;
+    max-width: 340px;
+    background: var(--board-bg);
+    color: var(--board-text);
+    font-family: "Minecraft", "Consolas", "Menlo", monospace;
+    font-size: 15px;
+    padding: 8px 10px 10px;
+    border-radius: 3px;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.25);
+  }
+  .board .title { color: var(--mc-red); font-weight: bold; text-align: center; margin-bottom: 4px; }
+  .board .line { display: flex; justify-content: space-between; gap: 16px; white-space: nowrap; }
+  .board .line span { text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.45); }
+  .mc-red { color: var(--mc-red); }
+  .mc-gold { color: var(--mc-gold); }
+  .mc-green { color: var(--mc-green); }
+  .mc-gray { color: var(--mc-gray); }
+  .mc-white { color: #fff; }
+
+  h2 { font-size: 17px; margin: 0; }
+  .server {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin-bottom: 14px;
+  }
+  .server header { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+  .here { font-size: 12px; font-weight: 600; color: var(--live); margin-left: 6px; }
+  .meta { color: var(--muted); font-size: 13px; }
+  table { width: 100%; border-collapse: collapse; }
+  td { padding: 6px 8px; border-top: 1px solid var(--border); }
+  tr:first-child td { border-top: none; }
+  tr:nth-child(even) td { background: var(--row); }
+  td.time { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.state { color: var(--muted); font-size: 13px; white-space: nowrap; }
+  .s-red { color: var(--state-red); }
+  .s-gold { color: var(--state-gold); }
+  .s-green { color: var(--state-green); }
+  .empty { color: var(--muted); text-align: center; padding: 40px 0; }
+  footer { color: var(--muted); font-size: 12px; text-align: center; margin-top: 24px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Isles Boss Timers</h1>
+  <div class="status"><span class="dot" id="dot"></span><span id="status">Loading…</span></div>
+  <div id="board"></div>
+  <div id="servers"></div>
+  <footer>Times count down here between updates. The game pushes new data about once a minute while it's running.</footer>
+</main>
+<script>
+  const STALE_MS = 15 * 60_000;
+  const POLL_MS = 90_000;
+
+  // owner.github.io/repo/ -> owner/repo; ?repo=owner/name overrides (for testing)
+  function repoFromUrl() {
+    const param = new URLSearchParams(location.search).get("repo");
+    if (param) return param;
+    const owner = location.hostname.split(".")[0];
+    const first = location.pathname.split("/").filter(Boolean)[0];
+    return owner + "/" + (first || location.hostname);
+  }
+  const REPO = repoFromUrl();
+
+  let data = null;
+
+  async function load() {
+    const sources = [
+      ["https://api.github.com/repos/" + REPO + "/contents/bosses.json?ref=data", { headers: { Accept: "application/vnd.github.raw+json" }, cache: "no-store" }],
+      ["https://raw.githubusercontent.com/" + REPO + "/data/bosses.json?t=" + Date.now(), { cache: "no-store" }],
+    ];
+    for (const [url, opts] of sources) {
+      try {
+        const res = await fetch(url, opts);
+        if (!res.ok) continue;
+        data = await res.json();
+        render();
+        return;
+      } catch (e) { /* try the next source */ }
+    }
+    if (!data) setStatus("", "No data yet. Is the game running with githubRepo and githubToken set?");
+  }
+
+  /** Same as the mod: minutes rounded up, "1h05m" once there are hours. */
+  function formatTime(ms) {
+    const total = Math.ceil(Math.max(0, ms) / 60_000);
+    const h = Math.floor(total / 60), m = total % 60;
+    return h > 0 ? h + "h" + String(m).padStart(2, "0") + "m" : m + "m";
+  }
+
+  function ago(ms) {
+    const min = Math.floor((Date.now() - ms) / 60_000);
+    if (min < 1) return "just now";
+    if (min < 60) return min + " min ago";
+    const h = Math.floor(min / 60);
+    return h < 24 ? h + "h " + (min % 60) + "m ago" : Math.floor(h / 24) + "d ago";
+  }
+
+  function clock(ms) {
+    return new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  }
+
+  /** [text, sidebar colour class, table colour class, state label] */
+  function describe(boss) {
+    const left = (boss.at || 0) - Date.now();
+    switch (boss.state) {
+      case "UNKNOWN": return ["Available", "mc-green", "s-green", "Available"];
+      case "READY": return ["Ready", "mc-gold", "s-gold", "Ready to spawn"];
+      case "SPAWNING": return left > 0 ? [formatTime(left), "mc-red", "s-red", "Spawning"] : ["Spawned", "mc-red", "s-red", "Spawned"];
+      case "SPAWNED": return ["Spawned", "mc-red", "s-red", "Spawned " + ago(boss.at)];
+      case "COOLDOWN": return left > 0 ? [formatTime(left), "mc-white", "", "Cooldown"] : ["Due", "mc-gold", "s-gold", "Due (not confirmed)"];
+      default: return ["?", "mc-gray", "", boss.state];
+    }
+  }
+
+  function el(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
+
+  function setStatus(dotClass, text) {
+    document.getElementById("dot").className = "dot " + dotClass;
+    document.getElementById("status").textContent = text;
+  }
+
+  function render() {
+    if (!data) return;
+    const stale = Date.now() - data.updated > STALE_MS;
+    setStatus(stale ? "stale" : "live",
+      (stale ? "Game offline · last update " : "Live · updated ") + ago(data.updated)
+      + (data.current && !stale ? " · on " + data.current : ""));
+
+    // The lines the mod adds under the in-game sidebar
+    const board = el("div", "board");
+    board.append(el("div", "title", "World Bosses"));
+    for (const line of data.sidebar || []) {
+      const [text, cls] = describe(line);
+      const row = el("div", "line");
+      row.title = line.name + " on " + line.server + (line.at ? " · " + clock(line.at) : "");
+      const right = el("span");
+      right.append(el("span", cls, text), el("span", "mc-gray", " " + line.shortServer));
+      row.append(el("span", "mc-white", line.short), right);
+      board.append(row);
+    }
+    if (!(data.sidebar || []).length) board.append(el("div", "mc-gray", "Waiting for /bossary..."));
+    document.getElementById("board").replaceChildren(board);
+
+    // Every server in full
+    const servers = document.getElementById("servers");
+    servers.replaceChildren();
+    if (!(data.servers || []).length) servers.append(el("div", "empty", "No servers read yet."));
+    for (const s of data.servers || []) {
+      const card = el("section", "server");
+      const head = el("header");
+      const h2 = el("h2", null, s.name);
+      if (s.name === data.current && !stale) h2.append(el("span", "here", "YOU'RE HERE"));
+      const speed = s.rateMeasured ? s.rate.toFixed(2) + "× speed (measured)" : "~" + s.rate.toFixed(2) + "× speed (estimated)";
+      head.append(h2, el("span", "meta", speed + (s.read ? " · /bossary read " + ago(s.read) : "")));
+      card.append(head);
+
+      const table = el("table");
+      for (const b of s.bosses) {
+        const [text, , cls, label] = describe(b);
+        const tr = el("tr");
+        const time = el("td", "time " + cls, text);
+        if (b.at) time.title = clock(b.at);
+        tr.append(el("td", null, b.name), el("td", "state", label), time);
+        table.append(tr);
+      }
+      card.append(table);
+      servers.append(card);
+    }
+  }
+
+  load();
+  setInterval(load, POLL_MS);
+  setInterval(render, 1000);
+</script>
+</body>
+</html>
